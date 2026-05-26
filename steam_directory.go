@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Philipp15b/go-steam/v3/netutil"
+	"github.com/sicdex/go-steam-ws/netutil"
 )
 
 // Load initial server list from Steam Directory Web API.
@@ -73,4 +73,71 @@ func (sd *steamDirectory) IsInitialized() bool {
 	defer sd.RUnlock()
 	isInitialized := sd.isInitialized
 	return isInitialized
+}
+
+type CMServer struct {
+	Endpoint       string
+	LegacyEndpoint string
+	Type           string
+	DC             string
+	Load           int
+	WeightedLoad   float64
+}
+
+func FetchCMListForConnect(cellID uint32) ([]CMServer, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	url := fmt.Sprintf("https://api.steampowered.com/ISteamDirectory/GetCMListForConnect/v1/?cellid=%d", cellID)
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var r struct {
+		Response struct {
+			Serverlist []struct {
+				Endpoint       string  `json:"endpoint"`
+				LegacyEndpoint string  `json:"legacy_endpoint"`
+				Type           string  `json:"type"`
+				DC             string  `json:"dc"`
+				Realm          string  `json:"realm"`
+				Load           int     `json:"load"`
+				WtdLoad        float64 `json:"wtd_load"`
+			} `json:"serverlist"`
+		} `json:"response"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, fmt.Errorf("decode GetCMListForConnect: %w", err)
+	}
+	if len(r.Response.Serverlist) == 0 {
+		return nil, fmt.Errorf("GetCMListForConnect returned zero servers")
+	}
+	out := make([]CMServer, 0, len(r.Response.Serverlist))
+	for _, s := range r.Response.Serverlist {
+		out = append(out, CMServer{
+			Endpoint:       s.Endpoint,
+			LegacyEndpoint: s.LegacyEndpoint,
+			Type:           s.Type,
+			DC:             s.DC,
+			Load:           s.Load,
+			WeightedLoad:   s.WtdLoad,
+		})
+	}
+	return out, nil
+}
+
+func FilterByType(servers []CMServer, t string) []CMServer {
+	out := servers[:0:0]
+	for _, s := range servers {
+		if s.Type == t {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func PickRandom(servers []CMServer) CMServer {
+	if len(servers) == 0 {
+		return CMServer{}
+	}
+	return servers[rand.Intn(len(servers))]
 }

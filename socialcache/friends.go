@@ -4,8 +4,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/Philipp15b/go-steam/v3/protocol/steamlang"
-	"github.com/Philipp15b/go-steam/v3/steamid"
+	"github.com/sicdex/go-steam-ws/protocol/steamlang"
+	"github.com/sicdex/go-steam-ws/steamid"
 )
 
 // Friends list is a thread safe map

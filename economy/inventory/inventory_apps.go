@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/Philipp15b/go-steam/v3/steamid"
+	"github.com/sicdex/go-steam-ws/steamid"
 )
 
 type InventoryApps map[string]*InventoryApp

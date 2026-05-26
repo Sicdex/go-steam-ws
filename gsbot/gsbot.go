@@ -22,9 +22,9 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/Philipp15b/go-steam/v3"
-	"github.com/Philipp15b/go-steam/v3/netutil"
-	"github.com/Philipp15b/go-steam/v3/protocol"
+	"github.com/sicdex/go-steam-ws"
+	"github.com/sicdex/go-steam-ws/netutil"
+	"github.com/sicdex/go-steam-ws/protocol"
 	"github.com/davecgh/go-spew/spew"
 )
 

@@ -3,10 +3,10 @@ package steam
 import (
 	"bytes"
 
-	"github.com/Philipp15b/go-steam/v3/protocol"
-	"github.com/Philipp15b/go-steam/v3/protocol/gamecoordinator"
-	"github.com/Philipp15b/go-steam/v3/protocol/protobuf"
-	"github.com/Philipp15b/go-steam/v3/protocol/steamlang"
+	"github.com/sicdex/go-steam-ws/protocol"
+	"github.com/sicdex/go-steam-ws/protocol/gamecoordinator"
+	"github.com/sicdex/go-steam-ws/protocol/protobuf"
+	"github.com/sicdex/go-steam-ws/protocol/steamlang"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -58,11 +58,18 @@ func (g *GameCoordinator) Write(msg gamecoordinator.IGCMsg) {
 		msgType = msgType | 0x80000000 // mask with protoMask
 	}
 
-	g.client.Write(protocol.NewClientMsgProtobuf(steamlang.EMsg_ClientToGC, &protobuf.CMsgGCClient{
+	out := protocol.NewClientMsgProtobuf(steamlang.EMsg_ClientToGC, &protobuf.CMsgGCClient{
 		Msgtype: proto.Uint32(msgType),
 		Appid:   proto.Uint32(msg.GetAppId()),
 		Payload: buf.Bytes(),
-	}))
+	})
+	// CRITICAL for the WebSocket transport (and harmless for TCP): the
+	// CM uses CMsgProtoBufHeader.routing_appid to decide which game
+	// coordinator should receive this ClientToGC envelope. SteamKit2
+	// has done this since the WS transport landed — without it WS-
+	// routed Hello packets silently disappear and the GC never replies.
+	out.Header.Proto.RoutingAppid = proto.Uint32(msg.GetAppId())
+	g.client.Write(out)
 }
 
 // Sets you in the given games. Specify none to quit all games.

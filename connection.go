@@ -9,8 +9,8 @@ import (
 	"net"
 	"sync"
 
-	"github.com/Philipp15b/go-steam/v3/cryptoutil"
-	"github.com/Philipp15b/go-steam/v3/protocol"
+	"github.com/sicdex/go-steam-ws/cryptoutil"
+	"github.com/sicdex/go-steam-ws/protocol"
 )
 
 type connection interface {
@@ -21,23 +21,43 @@ type connection interface {
 	IsEncrypted() bool
 }
 
+// Dialer matches net.Dial's signature so callers can route Steam
+// connections through a SOCKS5/HTTP-CONNECT proxy or any custom
+// transport. Pass via Client.Dialer before calling Connect().
+//
+// When Dialer is set on the Client, dialTCP delegates to it instead of
+// using net.DialTCP. The proxy is responsible for reaching the
+// destination CM by host:port.
+type Dialer func(network, address string) (net.Conn, error)
+
 const tcpConnectionMagic uint32 = 0x31305456 // "VT01"
 
 type tcpConnection struct {
-	conn        *net.TCPConn
+	conn        net.Conn
 	ciph        cipher.Block
 	cipherMutex sync.RWMutex
 }
 
-func dialTCP(laddr, raddr *net.TCPAddr) (*tcpConnection, error) {
-	conn, err := net.DialTCP("tcp", laddr, raddr)
+// dialTCP opens a TCP connection to the CM. If dialer is non-nil, it
+// takes precedence (typical for SOCKS5/HTTP-CONNECT proxies); laddr is
+// then ignored because the proxy owns its own routing. With nil dialer
+// and non-nil laddr we use net.DialTCP for source-IP binding; otherwise
+// plain net.Dial.
+func dialTCP(laddr, raddr *net.TCPAddr, dialer Dialer) (*tcpConnection, error) {
+	var conn net.Conn
+	var err error
+	switch {
+	case dialer != nil:
+		conn, err = dialer("tcp", raddr.String())
+	case laddr != nil:
+		conn, err = net.DialTCP("tcp", laddr, raddr)
+	default:
+		conn, err = net.Dial("tcp", raddr.String())
+	}
 	if err != nil {
 		return nil, err
 	}
-
-	return &tcpConnection{
-		conn: conn,
-	}, nil
+	return &tcpConnection{conn: conn}, nil
 }
 
 func (c *tcpConnection) Read() (*protocol.Packet, error) {

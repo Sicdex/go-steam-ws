@@ -5,10 +5,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Philipp15b/go-steam/v3/protocol"
-	"github.com/Philipp15b/go-steam/v3/protocol/protobuf"
-	"github.com/Philipp15b/go-steam/v3/protocol/steamlang"
-	"github.com/Philipp15b/go-steam/v3/steamid"
+	"github.com/sicdex/go-steam-ws/protocol"
+	"github.com/sicdex/go-steam-ws/protocol/protobuf"
+	"github.com/sicdex/go-steam-ws/protocol/steamlang"
+	"github.com/sicdex/go-steam-ws/steamid"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -110,7 +110,13 @@ func (a *Auth) handleLogOnResponse(packet *protocol.Packet) {
 	if result == steamlang.EResult_OK {
 		atomic.StoreInt32(&a.client.sessionId, msg.Header.Proto.GetClientSessionid())
 		atomic.StoreUint64(&a.client.steamId, msg.Header.Proto.GetSteamid())
-		a.client.Web.webLoginKey = *body.WebapiAuthenticateUserNonce
+		// Steam deprecated webapi_authenticate_user_nonce in favor of
+		// the new auth ticket flow — modern logon responses leave it
+		// nil. Guard so we don't panic dereferencing it, and just keep
+		// Web.webLoginKey blank (the Web helpers degrade gracefully).
+		if body.WebapiAuthenticateUserNonce != nil {
+			a.client.Web.webLoginKey = *body.WebapiAuthenticateUserNonce
+		}
 
 		go a.client.heartbeatLoop(time.Duration(body.GetOutOfGameHeartbeatSeconds()))
 

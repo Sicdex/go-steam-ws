@@ -13,12 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Philipp15b/go-steam/v3/cryptoutil"
-	"github.com/Philipp15b/go-steam/v3/netutil"
-	"github.com/Philipp15b/go-steam/v3/protocol"
-	"github.com/Philipp15b/go-steam/v3/protocol/protobuf"
-	"github.com/Philipp15b/go-steam/v3/protocol/steamlang"
-	"github.com/Philipp15b/go-steam/v3/steamid"
+	"github.com/sicdex/go-steam-ws/cryptoutil"
+	"github.com/sicdex/go-steam-ws/netutil"
+	"github.com/sicdex/go-steam-ws/protocol"
+	"github.com/sicdex/go-steam-ws/protocol/protobuf"
+	"github.com/sicdex/go-steam-ws/protocol/steamlang"
+	"github.com/sicdex/go-steam-ws/steamid"
 )
 
 // Represents a client to the Steam network.
@@ -40,6 +40,11 @@ type Client struct {
 	Notifications *Notifications
 	Trading       *Trading
 	GC            *GameCoordinator
+
+	// Dialer, when non-nil, is used for the underlying TCP connection
+	// to the Steam CM. Lets the caller route through a SOCKS5 or
+	// HTTP-CONNECT proxy. Must be set BEFORE Connect / ConnectTo.
+	Dialer Dialer
 
 	events        chan interface{}
 	handlers      []PacketHandler
@@ -167,7 +172,7 @@ func (c *Client) ConnectTo(addr *netutil.PortAddr) error {
 func (c *Client) ConnectToBind(addr *netutil.PortAddr, local *net.TCPAddr) error {
 	c.Disconnect()
 
-	conn, err := dialTCP(local, addr.ToTCPAddr())
+	conn, err := dialTCP(local, addr.ToTCPAddr(), c.Dialer)
 	if err != nil {
 		c.Fatalf("Connect failed: %v", err)
 		return err
@@ -177,6 +182,25 @@ func (c *Client) ConnectToBind(addr *netutil.PortAddr, local *net.TCPAddr) error
 
 	go c.readLoop()
 	go c.writeLoop()
+
+	return nil
+}
+
+func (c *Client) ConnectToWebSocket(host string) error {
+	c.Disconnect()
+
+	wsc, err := dialWebSocket(host, c.Dialer, 45*time.Second)
+	if err != nil {
+		c.Fatalf("Connect failed: %v", err)
+		return err
+	}
+	c.conn = wsc
+	c.writeChan = make(chan protocol.IMsg, 5)
+
+	go c.readLoop()
+	go c.writeLoop()
+
+	c.Emit(&ConnectedEvent{})
 
 	return nil
 }
@@ -282,7 +306,16 @@ func (c *Client) heartbeatLoop(seconds time.Duration) {
 	c.heartbeat = nil
 }
 
+// DebugPackets, when true, logs every incoming Steam packet's EMsg.
+// Useful while bringing up a new transport (WebSocket) to verify the
+// other side is actually routing what you expect. Off by default to
+// keep production logs quiet.
+var DebugPackets = false
+
 func (c *Client) handlePacket(packet *protocol.Packet) {
+	if DebugPackets {
+		fmt.Printf("steam: <- EMsg=%d (%s) IsProto=%v\n", packet.EMsg, packet.EMsg, packet.IsProto)
+	}
 	switch packet.EMsg {
 	case steamlang.EMsg_ChannelEncryptRequest:
 		c.handleChannelEncryptRequest(packet)
@@ -380,8 +413,8 @@ func (c *Client) handleClientCMList(packet *protocol.Packet) {
 	l := make([]*netutil.PortAddr, 0)
 	for i, ip := range body.GetCmAddresses() {
 		l = append(l, &netutil.PortAddr{
-			readIp(ip),
-			uint16(body.GetCmPorts()[i]),
+			IP:   readIp(ip),
+			Port: uint16(body.GetCmPorts()[i]),
 		})
 	}
 
