@@ -81,6 +81,22 @@ func (a *Auth) LogOn(details *LogOnDetails) {
 	a.client.Write(protocol.NewClientMsgProtobuf(steamlang.EMsg_ClientLogon, logon))
 }
 
+// LogOnAnonymousGS logs on to Steam as an anonymous game server — no
+// username/password. This is the login an app's GC expects for ServerToGC
+// messages (the classic "anonymous GS" path). After the LoggedOnEvent the
+// caller announces its served app via a CMsgGSServerType and then completes
+// the GC ServerHello → ServerWelcome handshake.
+func (a *Auth) LogOnAnonymousGS() {
+	logon := new(protobuf.CMsgClientLogon)
+	logon.ProtocolVersion = proto.Uint32(steamlang.MsgClientLogon_CurrentProtocol)
+
+	// Anonymous game-server identity: zero account id, instance 0, account
+	// type AnonGameServer (vs Individual for a credentialed user logon).
+	atomic.StoreUint64(&a.client.steamId, uint64(steamid.NewIdAdv(0, 0, int32(steamlang.EUniverse_Public), int32(steamlang.EAccountType_AnonGameServer))))
+
+	a.client.Write(protocol.NewClientMsgProtobuf(steamlang.EMsg_ClientLogon, logon))
+}
+
 func (a *Auth) HandlePacket(packet *protocol.Packet) {
 	switch packet.EMsg {
 	case steamlang.EMsg_ClientLogOnResponse:
