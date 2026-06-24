@@ -75,6 +75,14 @@ func (a *Auth) LogOn(details *LogOnDetails) {
 	if details.ShouldRememberPassword {
 		logon.ShouldRememberPassword = proto.Bool(details.ShouldRememberPassword)
 	}
+	// Opt in to Steam's dedicated rate-limit responses (matches SteamKit2's
+	// default). Without this flag Steam masks login throttling — too many
+	// logon attempts from this account or IP — as EResult_InvalidPassword,
+	// which is indistinguishable from a genuinely wrong password. With it set,
+	// a throttled logon comes back as EResult_RateLimitExceeded /
+	// EResult_AccountLoginDeniedThrottle instead, so callers can back off and
+	// retry rather than falsely flagging the credentials as bad.
+	logon.SupportsRateLimitResponse = proto.Bool(true)
 
 	atomic.StoreUint64(&a.client.steamId, uint64(steamid.NewIdAdv(0, 1, int32(steamlang.EUniverse_Public), int32(steamlang.EAccountType_Individual))))
 
