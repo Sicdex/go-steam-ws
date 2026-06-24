@@ -2,6 +2,7 @@ package steam
 
 import (
 	"crypto/sha1"
+	"log"
 	"sync/atomic"
 	"time"
 
@@ -36,6 +37,19 @@ type LogOnDetails struct {
 	// true if you want to get a login key which can be used in lieu of
 	// a password for subsequent logins. false or omitted otherwise.
 	ShouldRememberPassword bool
+
+	// MachineID is the binary machine_id blob (Valve KeyValues MessageObject)
+	// sent with logon. Leave nil to send a stable per-account id derived from
+	// Username — recommended for headless pools, so each account consistently
+	// presents its own unique "machine". Set it only to override that.
+	MachineID []byte
+
+	// AccessToken is a refresh token from the modern credential auth flow
+	// (Authentication.BeginAuthSessionViaCredentials → PollAuthSessionStatus).
+	// When set, the logon authenticates with the token instead of the password —
+	// the only path Steam still accepts for many accounts. Username is still
+	// required; Password may be empty.
+	AccessToken string
 }
 
 // Log on with the given details. You must always specify username and
@@ -53,13 +67,17 @@ func (a *Auth) LogOn(details *LogOnDetails) {
 	if details.Username == "" {
 		panic("Username must be set!")
 	}
-	if details.Password == "" && details.LoginKey == "" {
-		panic("Password or LoginKey must be set!")
+	if details.Password == "" && details.LoginKey == "" && details.AccessToken == "" {
+		panic("Password, LoginKey, or AccessToken must be set!")
 	}
 
 	logon := new(protobuf.CMsgClientLogon)
 	logon.AccountName = &details.Username
-	logon.Password = &details.Password
+	// With a token, Steam wants the password field ABSENT (SteamKit sends none);
+	// an empty password present alongside the token gets rejected as InvalidPassword.
+	if details.AccessToken == "" {
+		logon.Password = &details.Password
+	}
 	if details.AuthCode != "" {
 		logon.AuthCode = proto.String(details.AuthCode)
 	}
@@ -72,9 +90,51 @@ func (a *Auth) LogOn(details *LogOnDetails) {
 	if details.LoginKey != "" {
 		logon.LoginKey = proto.String(details.LoginKey)
 	}
+	if details.AccessToken != "" {
+		logon.AccessToken = proto.String(details.AccessToken)
+	}
 	if details.ShouldRememberPassword {
 		logon.ShouldRememberPassword = proto.Bool(details.ShouldRememberPassword)
 	}
+
+	// Present the client fingerprint a real desktop Steam client sends. Steam's
+	// anti-fraud flags accounts that log on with no machine_id — or with an
+	// empty/identical one across a whole fleet — and treats a credentialed
+	// logon that never establishes a machine as a brand-new untrusted device
+	// every time. Giving each account a stable, unique fingerprint makes the
+	// pool look like many distinct, returning desktop clients rather than one
+	// anonymous automated swarm. Fields mirror SteamKit2's CMsgClientLogon.
+	if details.MachineID != nil {
+		logon.MachineId = details.MachineID
+	} else {
+		logon.MachineId = generateMachineID(details.Username)
+	}
+	logon.MachineName = proto.String(machineName(details.Username))
+	// A real Steam client build number — SteamKit notes Steam needs this to
+	// hand back a proper sentry file for machine auth.
+	logon.ClientPackageVersion = proto.Uint32(1771)
+	// Report Windows 10 (EOSType 16) — what the overwhelming majority of
+	// Dota/Deadlock clients run, regardless of our Linux host. Steam does not
+	// cross-check this against the connection.
+	logon.ClientOsType = proto.Uint32(16)
+	// chat_mode 2 = the post-2016 "new" friends/chat that the real client
+	// always negotiates at logon.
+	logon.ChatMode = proto.Uint32(2)
+	// obfuscated_private_ip: a real client always reports its (XOR-obfuscated)
+	// LAN address here; an absent one is unusual. Synthesize a stable, plausible
+	// private address per account. Both the modern CMsgIPAddress field and its
+	// deprecated uint32 twin are set, as a real client does.
+	obfIP := obfuscatedPrivateIP(details.Username)
+	logon.ObfuscatedPrivateIp = &protobuf.CMsgIPAddress{Ip: &protobuf.CMsgIPAddress_V4{V4: obfIP}}
+	logon.DeprecatedObfustucatedPrivateIp = proto.Uint32(obfIP)
+	// Mirror the real client: OK once we already hold a machine-auth (sentry)
+	// hash, FileNotFound on the very first logon.
+	if len(details.SentryFileHash) > 0 {
+		logon.EresultSentryfile = proto.Int32(int32(steamlang.EResult_OK))
+	} else {
+		logon.EresultSentryfile = proto.Int32(int32(steamlang.EResult_FileNotFound))
+	}
+
 	// Opt in to Steam's dedicated rate-limit responses (matches SteamKit2's
 	// default). Without this flag Steam masks login throttling — too many
 	// logon attempts from this account or IP — as EResult_InvalidPassword,
@@ -131,6 +191,11 @@ func (a *Auth) handleLogOnResponse(packet *protocol.Packet) {
 	msg := packet.ReadProtoMsg(body)
 
 	result := steamlang.EResult(body.GetEresult())
+	if result != steamlang.EResult_OK && DebugPackets {
+		// Surface the exact codes Steam returned — including the "silent"
+		// Fail/ServiceUnavailable/TryAnotherCM branch below that emits no event.
+		log.Printf("steam: logon response: eresult=%v eresult_extended=%v", result, steamlang.EResult(body.GetEresultExtended()))
+	}
 	if result == steamlang.EResult_OK {
 		atomic.StoreInt32(&a.client.sessionId, msg.Header.Proto.GetClientSessionid())
 		atomic.StoreUint64(&a.client.steamId, msg.Header.Proto.GetSteamid())
@@ -168,7 +233,8 @@ func (a *Auth) handleLogOnResponse(packet *protocol.Packet) {
 		// some error on Steam's side, we'll get an EOF later
 	} else {
 		a.client.Emit(&LogOnFailedEvent{
-			Result: steamlang.EResult(body.GetEresult()),
+			Result:         steamlang.EResult(body.GetEresult()),
+			ExtendedResult: steamlang.EResult(body.GetEresultExtended()),
 		})
 		a.client.Disconnect()
 	}
@@ -203,12 +269,25 @@ func (a *Auth) handleLoggedOff(packet *protocol.Packet) {
 func (a *Auth) handleUpdateMachineAuth(packet *protocol.Packet) {
 	body := new(protobuf.CMsgClientUpdateMachineAuth)
 	packet.ReadProtoMsg(body)
-	hash := sha1.New()
-	hash.Write(packet.Data)
-	sha := hash.Sum(nil)
+
+	// Hash the sentry FILE CONTENT (the bytes Steam sends here) — not the raw
+	// packet, as before — and echo a complete response, exactly as a real
+	// client does. Steam then trusts this machine, and the returned SHA can be
+	// replayed as sha_sentryfile on the next logon to log on as a known device.
+	// Steam delivers the sentry in a single chunk in practice; offset/cubtowrite
+	// are echoed back for completeness.
+	sentry := body.GetBytes()
+	sum := sha1.Sum(sentry)
+	sha := sum[:]
 
 	msg := protocol.NewClientMsgProtobuf(steamlang.EMsg_ClientUpdateMachineAuthResponse, &protobuf.CMsgClientUpdateMachineAuthResponse{
-		ShaFile: sha,
+		Filename:     proto.String(body.GetFilename()),
+		Eresult:      proto.Uint32(uint32(steamlang.EResult_OK)),
+		Filesize:     proto.Uint32(uint32(len(sentry))),
+		ShaFile:      sha,
+		Getlasterror: proto.Uint32(0),
+		Offset:       proto.Uint32(body.GetOffset()),
+		Cubwrote:     proto.Uint32(body.GetCubtowrite()),
 	})
 	msg.SetTargetJobId(packet.SourceJobId)
 	a.client.Write(msg)

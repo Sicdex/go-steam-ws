@@ -34,12 +34,13 @@ type Client struct {
 	steamId      uint64
 	currentJobId uint64
 
-	Auth          *Auth
-	Social        *Social
-	Web           *Web
-	Notifications *Notifications
-	Trading       *Trading
-	GC            *GameCoordinator
+	Auth           *Auth
+	Authentication *Authentication
+	Social         *Social
+	Web            *Web
+	Notifications  *Notifications
+	Trading        *Trading
+	GC             *GameCoordinator
 
 	// Dialer, when non-nil, is used for the underlying TCP connection
 	// to the Steam CM. Lets the caller route through a SOCKS5 or
@@ -73,6 +74,9 @@ func NewClient() *Client {
 
 	client.Auth = &Auth{client: client}
 	client.RegisterPacketHandler(client.Auth)
+
+	client.Authentication = newAuthentication(client)
+	client.RegisterPacketHandler(client.Authentication)
 
 	client.Social = newSocial(client)
 	client.RegisterPacketHandler(client.Social)

@@ -28,6 +28,10 @@ func main() {
 		forceCM  string
 		listOnly bool
 		only443  bool
+		debug    bool
+		newAuth  bool
+		tcp      bool
+		token    string
 	)
 	flag.StringVar(&username, "user", "", "Steam username (required for login)")
 	flag.StringVar(&password, "pass", "", "Steam password (required for login)")
@@ -36,10 +40,17 @@ func main() {
 	flag.StringVar(&forceCM, "cm", "", "skip the directory lookup and use this host:port CM (must be a websocket-type CM)")
 	flag.BoolVar(&listOnly, "list", false, "just fetch and print the websocket-capable CM list, then exit")
 	flag.BoolVar(&only443, "only-443", false, "restrict CM selection to port 443 (mandatory when going through HTTP-CONNECT proxies that only allow CONNECT :443)")
+	flag.BoolVar(&debug, "debug", false, "log every Steam packet EMsg and the raw logon eresult/eresult_extended")
+	flag.BoolVar(&newAuth, "newauth", false, "use the modern token-auth flow (RSA + BeginAuthSessionViaCredentials + poll) instead of legacy password logon; prints the issued refresh token")
+	flag.BoolVar(&tcp, "tcp", false, "connect via direct TCP CM (client.Connect) instead of WebSocket")
+	flag.StringVar(&token, "token", "", "log on with this refresh token (modern token logon) instead of a password")
 	flag.Parse()
+	steam.DebugPackets = debug
 
 	var cmEndpoint string
-	if forceCM != "" {
+	if tcp {
+		// direct TCP: client.Connect() selects a CM from the directory itself
+	} else if forceCM != "" {
 		cmEndpoint = forceCM
 	} else {
 		cms, err := steam.FetchCMListForConnect(0)
@@ -74,8 +85,8 @@ func main() {
 		cmEndpoint = cm.Endpoint
 		log.Printf("picked CM: %s (dc=%s load=%d, %d candidates)", cm.Endpoint, cm.DC, cm.Load, len(ws))
 	}
-	if username == "" || password == "" {
-		log.Fatal("-user and -pass are required (use -list to skip auth)")
+	if username == "" || (password == "" && token == "") {
+		log.Fatal("-user and (-pass or -token) are required (use -list to skip auth)")
 	}
 
 	client := steam.NewClient()
@@ -88,10 +99,21 @@ func main() {
 		log.Printf("proxy: %s", proxyURL)
 	}
 
-	log.Printf("dialing wss://%s/cmsocket/ ...", cmEndpoint)
 	t0 := time.Now()
-	if err := client.ConnectToWebSocket(cmEndpoint); err != nil {
-		log.Fatalf("ConnectToWebSocket: %v", err)
+	if tcp {
+		if err := steam.InitializeSteamDirectory(); err != nil {
+			log.Printf("directory refresh: %v (using hardcoded CMs)", err)
+		}
+		server, err := client.Connect()
+		if err != nil {
+			log.Fatalf("Connect (TCP): %v", err)
+		}
+		log.Printf("TCP-connecting to %v ...", server)
+	} else {
+		log.Printf("dialing wss://%s/cmsocket/ ...", cmEndpoint)
+		if err := client.ConnectToWebSocket(cmEndpoint); err != nil {
+			log.Fatalf("ConnectToWebSocket: %v", err)
+		}
 	}
 	log.Printf("WS tunnel up after %s; waiting for Steam channel-encryption handshake", time.Since(t0).Round(time.Millisecond))
 
@@ -101,11 +123,35 @@ func main() {
 		case evt := <-client.Events():
 			switch e := evt.(type) {
 			case *steam.ConnectedEvent:
-				log.Printf("=> ConnectedEvent (channel encrypted) at %s — sending LogOn", time.Since(t0).Round(time.Millisecond))
-				client.Auth.LogOn(&steam.LogOnDetails{
-					Username: username,
-					Password: password,
-				})
+				log.Printf("=> ConnectedEvent (channel encrypted) at %s", time.Since(t0).Round(time.Millisecond))
+				if token != "" {
+					log.Println("=> logging on with refresh token (modern token logon)")
+					client.Auth.LogOn(&steam.LogOnDetails{
+						Username:    username,
+						AccessToken: token,
+					})
+				} else if newAuth {
+					log.Println("=> running modern token-auth (BeginAuthSessionViaCredentials)...")
+					go func() {
+						res, err := client.Authentication.LogOnWithCredentials(username, password)
+						if err != nil {
+							log.Printf("=> token-auth FAILED: %v", err)
+							os.Exit(1)
+						}
+						tok := res.RefreshToken
+						if len(tok) > 48 {
+							tok = tok[:48] + "..."
+						}
+						log.Printf("=> token-auth SUCCESS: account=%q steamid=%d refresh_token=%s (len=%d)", res.AccountName, res.SteamID, tok, len(res.RefreshToken))
+						os.Exit(0)
+					}()
+				} else {
+					log.Println("=> sending legacy LogOn")
+					client.Auth.LogOn(&steam.LogOnDetails{
+						Username: username,
+						Password: password,
+					})
+				}
 			case *steam.LoggedOnEvent:
 				if e.Result == steamlang.EResult_OK {
 					log.Printf("=> LoggedOnEvent OK at %s, steam_id=%d session_id=%d cell=%d",
@@ -116,7 +162,7 @@ func main() {
 				}
 				log.Fatalf("=> LoggedOnEvent FAILED result=%v (extended=%v)", e.Result, e.ExtendedResult)
 			case *steam.LogOnFailedEvent:
-				log.Fatalf("=> LogOnFailedEvent: %v", e.Result)
+				log.Fatalf("=> LogOnFailedEvent: result=%v extended=%v", e.Result, e.ExtendedResult)
 			case *steam.LoggedOffEvent:
 				log.Fatalf("=> LoggedOffEvent: %v", e.Result)
 			case *steam.DisconnectedEvent:

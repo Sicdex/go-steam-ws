@@ -27,7 +27,8 @@ type LoggedOnEvent struct {
 }
 
 type LogOnFailedEvent struct {
-	Result steamlang.EResult
+	Result         steamlang.EResult
+	ExtendedResult steamlang.EResult
 }
 
 type LoginKeyEvent struct {
