@@ -142,8 +142,9 @@ func main() {
 						if len(tok) > 48 {
 							tok = tok[:48] + "..."
 						}
-						log.Printf("=> token-auth SUCCESS: account=%q steamid=%d refresh_token=%s (len=%d)", res.AccountName, res.SteamID, tok, len(res.RefreshToken))
-						os.Exit(0)
+						log.Printf("=> token-auth SUCCESS (mint): account=%q steamid=%d refresh_token=%s (len=%d)", res.AccountName, res.SteamID, tok, len(res.RefreshToken))
+						log.Println("=> logging on with the freshly minted token (mint->logon, exactly what the feed does)...")
+						client.Auth.LogOn(&steam.LogOnDetails{Username: username, AccessToken: res.RefreshToken})
 					}()
 				} else {
 					log.Println("=> sending legacy LogOn")
@@ -157,8 +158,12 @@ func main() {
 					log.Printf("=> LoggedOnEvent OK at %s, steam_id=%d session_id=%d cell=%d",
 						time.Since(t0).Round(time.Millisecond), e.ClientSteamId, client.SessionId(), e.CellId)
 					log.Println("SUCCESS — go-steam-ws WebSocket path works end-to-end")
-					client.Disconnect()
-					return
+					// Exit rather than client.Disconnect()+return: this goroutine is
+					// the Events() reader, and Disconnect() emits a DisconnectedEvent
+					// on that same channel, so calling it here would deadlock (nothing
+					// left to drain it). The feed never hits this — it reads Events()
+					// in a goroutine separate from the one that calls Disconnect().
+					os.Exit(0)
 				}
 				log.Fatalf("=> LoggedOnEvent FAILED result=%v (extended=%v)", e.Result, e.ExtendedResult)
 			case *steam.LogOnFailedEvent:
