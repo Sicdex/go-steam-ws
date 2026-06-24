@@ -1,0 +1,111 @@
+// Minimal hand-authored definition of Steam's modern credential-auth service
+// messages (IAuthenticationService). The upstream steammessages_auth.steamclient.proto
+// from SteamDatabase/Protobufs is not vendored here, so this file defines only
+// the three request/response pairs (+ supporting types/enums) that the headless
+// credential-login flow needs, with field numbers and enum values matching
+// SteamKit2's generated SteamMsgAuth.cs. Self-contained: no imports, no service
+// block (the unified method name "Authentication.X#1" is set on the protobuf
+// header by the Go transport, not via cc_generic_services).
+syntax = "proto2";
+
+option go_package = "github.com/sicdex/go-steam-ws/protocol/protobuf/unified;unified";
+
+// CMsgClientHello (EMsg 9805) — the real client sends this first on a fresh
+// connection (empty header, just the protocol version). Steam's WebSocket CM
+// requires it before it will accept unauthenticated service-method calls; without
+// it, the CM closes the connection. Defined here (not in the upstream login
+// proto) so the credential-auth flow is self-contained.
+message CMsgClientHello {
+	optional uint32 protocol_version = 1;
+}
+
+enum EAuthTokenPlatformType {
+	k_EAuthTokenPlatformType_Unknown = 0;
+	k_EAuthTokenPlatformType_SteamClient = 1;
+	k_EAuthTokenPlatformType_WebBrowser = 2;
+	k_EAuthTokenPlatformType_MobileApp = 3;
+}
+
+enum ESessionPersistence {
+	k_ESessionPersistence_Invalid = -1;
+	k_ESessionPersistence_Ephemeral = 0;
+	k_ESessionPersistence_Persistent = 1;
+}
+
+enum EAuthSessionGuardType {
+	k_EAuthSessionGuardType_Unknown = 0;
+	k_EAuthSessionGuardType_None = 1;
+	k_EAuthSessionGuardType_EmailCode = 2;
+	k_EAuthSessionGuardType_DeviceCode = 3;
+	k_EAuthSessionGuardType_DeviceConfirmation = 4;
+	k_EAuthSessionGuardType_EmailConfirmation = 5;
+	k_EAuthSessionGuardType_MachineToken = 6;
+	k_EAuthSessionGuardType_LegacyMachineAuth = 7;
+}
+
+message CAuthentication_GetPasswordRSAPublicKey_Request {
+	optional string account_name = 1;
+}
+
+message CAuthentication_GetPasswordRSAPublicKey_Response {
+	optional string publickey_mod = 1;
+	optional string publickey_exp = 2;
+	optional uint64 timestamp = 3;
+}
+
+message CAuthentication_DeviceDetails {
+	optional string device_friendly_name = 1;
+	optional EAuthTokenPlatformType platform_type = 2 [default = k_EAuthTokenPlatformType_Unknown];
+	optional int32 os_type = 3;
+	optional uint32 gaming_device_type = 4;
+	optional uint32 client_count = 5;
+	optional bytes machine_id = 6;
+}
+
+message CAuthentication_BeginAuthSessionViaCredentials_Request {
+	optional string device_friendly_name = 1;
+	optional string account_name = 2;
+	optional string encrypted_password = 3;
+	optional uint64 encryption_timestamp = 4;
+	optional bool remember_login = 5;
+	optional EAuthTokenPlatformType platform_type = 6 [default = k_EAuthTokenPlatformType_Unknown];
+	optional ESessionPersistence persistence = 7 [default = k_ESessionPersistence_Persistent];
+	optional string website_id = 8;
+	optional CAuthentication_DeviceDetails device_details = 9;
+	optional string guard_data = 10;
+	optional uint32 language = 11;
+	optional int32 qos_level = 12 [default = 2];
+}
+
+message CAuthentication_AllowedConfirmation {
+	optional EAuthSessionGuardType confirmation_type = 1 [default = k_EAuthSessionGuardType_Unknown];
+	optional string associated_message = 2;
+}
+
+message CAuthentication_BeginAuthSessionViaCredentials_Response {
+	optional uint64 client_id = 1;
+	optional bytes request_id = 2;
+	optional float interval = 3;
+	repeated CAuthentication_AllowedConfirmation allowed_confirmations = 4;
+	optional uint64 steamid = 5;
+	optional string weak_token = 6;
+	optional string agreement_session_url = 7;
+	optional string extended_error_message = 8;
+}
+
+message CAuthentication_PollAuthSessionStatus_Request {
+	optional uint64 client_id = 1;
+	optional bytes request_id = 2;
+	optional fixed64 token_to_revoke = 3;
+}
+
+message CAuthentication_PollAuthSessionStatus_Response {
+	optional uint64 new_client_id = 1;
+	optional string new_challenge_url = 2;
+	optional string refresh_token = 3;
+	optional string access_token = 4;
+	optional bool had_remote_interaction = 5;
+	optional string account_name = 6;
+	optional string new_guard_data = 7;
+	optional string agreement_session_url = 8;
+}

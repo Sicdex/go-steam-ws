@@ -161,6 +161,11 @@ var csgoProtoFiles = map[string]string{
 	"uifontfile_format.proto":      "uifontfile.pb.go",
 }
 
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
 func compileProto(srcBase, srcSubdir, proto, target string, opt []string) {
 	outDir, _ := filepath.Split(target)
 	err := os.MkdirAll(outDir, os.ModePerm)
@@ -168,12 +173,21 @@ func compileProto(srcBase, srcSubdir, proto, target string, opt []string) {
 		panic(err)
 	}
 
-	args := []string{
-		"-I=" + srcBase,
-		"-I=" + srcBase + "/google",
-		"-I=" + srcBase + "/" + srcSubdir,
-		"--go_out=" + outDir,
+	args := []string{}
+	// Local overrides (vendored outside the Protobufs git submodule, under
+	// local-protos/<subdir>) take precedence: protoc resolves each file from the
+	// first -I dir that contains it, so a copy in local-protos shadows the
+	// submodule's. Only added when that dir exists, so subdirs without overrides
+	// (tf2/dota2/csgo) are unaffected. See local-protos/README.md.
+	if local := "local-protos/" + srcSubdir; dirExists(local) {
+		args = append(args, "-I="+local)
 	}
+	args = append(args,
+		"-I="+srcBase,
+		"-I="+srcBase+"/google",
+		"-I="+srcBase+"/"+srcSubdir,
+		"--go_out="+outDir,
+	)
 	args = append(args, opt...)
 	args = append(args, proto)
 
